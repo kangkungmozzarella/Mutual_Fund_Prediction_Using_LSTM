@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard Prediksi Reksa Dana LSTM</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>Prediksi Reksa Dana LSTM</h1>
+        <p id="subtitle">Memuat data…</p>
+      </div>
+    </div>
+    <form class="ticker-form" id="ticker-form">
+      <label>Ticker Yahoo<input id="ticker" value="XSSI.JK" spellcheck="false" autocomplete="off"></label>
+      <label>Data sejak<input id="start" type="date" value="2022-03-01"></label>
+      <button type="submit" class="btn">Muat</button>
+      <button type="button" class="btn ghost" id="refresh-data" title="Ambil ulang data dari Yahoo Finance">Segarkan data</button>
+    </form>
+    <div class="live" id="live">
+      <span class="dot" id="live-dot"></span>
+      <div>
+        <div class="live-price"><b id="live-price">—</b> <span id="live-chg"></span></div>
+        <div class="live-meta" id="live-meta">Menunggu harga…</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="panel" id="panel">
+      <h2>Variabel model</h2>
+      <form id="params-form">
+        <fieldset>
+          <legend>Fitur input</legend>
+          <div class="chips" id="features"></div>
+          <p class="hint">Close selalu dipakai karena menjadi target prediksi.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Data</legend>
+          <div class="field"><label for="p-window">Window (hari)</label><output data-for="p-window"></output></div>
+          <input type="range" id="p-window" name="window" min="5" max="120" step="1">
+          <div class="field"><label for="p-split">Porsi data latih</label><output data-for="p-split" data-fmt="pct"></output></div>
+          <input type="range" id="p-split" name="split" min="0.5" max="0.95" step="0.05">
+          <div class="field"><label for="p-rsi_period">Periode RSI</label><output data-for="p-rsi_period"></output></div>
+          <input type="range" id="p-rsi_period" name="rsi_period" min="2" max="50" step="1">
+        </fieldset>
+        <fieldset>
+          <legend>Arsitektur</legend>
+          <div class="field"><label for="p-layers">Lapis LSTM</label>
+            <select id="p-layers" name="layers"><option>1</option><option>2</option><option>3</option></select></div>
+          <div class="field"><label for="p-units">Unit per lapis</label>
+            <select id="p-units" name="units"><option>16</option><option>32</option><option>50</option><option>64</option><option>128</option></select></div>
+          <div class="field"><label for="p-dropout">Dropout</label><output data-for="p-dropout"></output></div>
+          <input type="range" id="p-dropout" name="dropout" min="0" max="0.6" step="0.05">
+        </fieldset>
+        <fieldset>
+          <legend>Training</legend>
+          <div class="field"><label for="p-epochs">Epoch maks.</label><output data-for="p-epochs"></output></div>
+          <input type="range" id="p-epochs" name="epochs" min="5" max="300" step="5">
+          <div class="field"><label for="p-batch_size">Batch size</label>
+            <select id="p-batch_size" name="batch_size"><option>4</option><option>8</option><option>16</option><option>32</option><option>64</option><option>128</option></select></div>
+          <div class="field"><label for="p-learning_rate">Learning rate</label>
+            <select id="p-learning_rate" name="learning_rate"><option>0.0001</option><option>0.0005</option><option>0.001</option><option>0.005</option><option>0.01</option></select></div>
+          <div class="field"><label for="p-patience">Early stopping</label><output data-for="p-patience" data-suffix=" epoch"></output></div>
+          <input type="range" id="p-patience" name="patience" min="1" max="50" step="1">
+          <div class="field"><label for="p-seed">Seed acak</label><input id="p-seed" name="seed" type="number" min="0" max="10000"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Prediksi</legend>
+          <div class="field"><label for="p-horizon">Horizon forecast</label><output data-for="p-horizon" data-suffix=" hari"></output></div>
+          <input type="range" id="p-horizon" name="horizon" min="1" max="120" step="1">
+        </fieldset>
+        <div class="actions">
+          <button type="submit" class="btn primary" id="train-btn">Latih model</button>
+          <button type="button" class="btn ghost" id="reset-btn">Reset</button>
+        </div>
+        <div class="progress" id="progress" hidden>
+          <div class="bar"><span id="progress-bar"></span></div>
+          <div class="progress-text" id="progress-text"></div>
+        </div>
+      </form>
+    </aside>
+
+    <main class="canvas">
+      <div class="banner" id="banner" hidden></div>
+
+      <section class="kpis">
+        <div class="kpi"><span>Harga terakhir</span><b id="k-price">—</b><small id="k-price-sub">—</small></div>
+        <div class="kpi"><span>Return 1 tahun</span><b id="k-ret">—</b><small>Close vs setahun lalu</small></div>
+        <div class="kpi"><span>RMSE data uji</span><b id="k-rmse">—</b><small id="k-mae">—</small></div>
+        <div class="kpi"><span>MAPE data uji</span><b id="k-mape">—</b><small>Rata-rata selisih persen</small></div>
+        <div class="kpi"><span>vs tebakan naive</span><b id="k-naive">—</b><small id="k-naive-sub">RMSE dibanding "harga = kemarin"</small></div>
+        <div class="kpi"><span>Akurasi arah</span><b id="k-dir">—</b><small id="k-dir-sub">—</small></div>
+        <div class="kpi"><span id="k-fc-label">Forecast akhir</span><b id="k-fc">—</b><small id="k-fc-sub">—</small></div>
+      </section>
+
+      <section class="grid g-main">
+        <div class="card">
+          <div class="card-head"><h3>Harga, prediksi, dan forecast</h3><span class="muted" id="price-note">Klik legenda untuk menyembunyikan seri</span></div>
+          <div class="chart tall" id="c-price"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Kurva loss training</h3><span class="muted" id="loss-note"></span></div>
+          <div class="chart tall" id="c-loss"></div>
+        </div>
+      </section>
+
+      <section class="grid g-3">
+        <div class="card"><div class="card-head"><h3>MAPE per bulan</h3><span class="muted">Data uji</span></div><div class="chart" id="c-mape"></div></div>
+        <div class="card"><div class="card-head"><h3>Distribusi error</h3><span class="muted">Aktual − prediksi</span></div><div class="chart" id="c-hist"></div></div>
+        <div class="card"><div class="card-head"><h3>Aktual vs prediksi</h3><span class="muted">Dekat diagonal = tepat</span></div><div class="chart" id="c-scatter"></div></div>
+      </section>
+
+      <section class="grid g-2">
+        <div class="card">
+          <div class="card-head"><h3>Tabel forecast</h3><span class="muted">Dengan rentang perkiraan 95%</span></div>
+          <div class="table-wrap"><table class="table" id="t-forecast">
+            <thead><tr><th>Tanggal</th><th>Hari ke-</th><th>Prediksi</th><th>Rentang</th><th>Perubahan</th></tr></thead><tbody></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Riwayat percobaan</h3><span class="muted">Klik baris untuk melihat hasilnya</span></div>
+          <div class="table-wrap"><table class="table clickable" id="t-runs">
+            <thead><tr><th>#</th><th>Window</th><th>Model</th><th>Epoch</th><th>Fitur</th><th>RMSE</th><th>MAPE</th><th>vs naive</th><th>Arah</th></tr></thead><tbody></tbody>
+          </table></div>
+          <button class="btn ghost small" id="clear-runs" type="button">Hapus riwayat</button>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <details>
+          <summary>Tentang model dan data</summary>
+          <ul>
+            <li>Data harian diambil dari Yahoo Finance lewat <code>yfinance</code>. Jika gagal, dashboard memakai CSV cadangan di folder <code>data/</code>.</li>
+            <li>Target prediksi adalah harga Close hari berikutnya. Fitur dinormalisasi MinMax berdasarkan data latih saja.</li>
+            <li>Forecast dibuat rekursif: setiap hasil prediksi dijadikan baris harga baru, lalu Average dan RSI dihitung ulang untuk langkah berikutnya.</li>
+            <li>Rentang perkiraan = ±1,96 × simpangan baku error data uji × √hari. Ini gambaran kasar ketidakpastian, bukan jaminan.</li>
+            <li>"vs tebakan naive" membandingkan RMSE model dengan tebakan paling sederhana: harga besok = harga hari ini. Nilai positif berarti model lebih baik.</li>
+            <li>Bukan saran investasi.</li>
+          </ul>
+        </details>
+      </footer>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
